@@ -177,7 +177,8 @@ jobs:
           ISSUE_BODY: ${{ github.event.comment.body || github.event.issue.body }}
         run: |
           # Generate response using HugChat, maintaining context per issue
-          RESPONSE=$(./hugchat_cli.py --web-search --issue-number ${{ github.event.issue.number }} "$ISSUE_BODY")
+          ls -alFh hugchat_cli.py
+          RESPONSE=$(python hugchat_cli.py --web-search --issue-number ${{ github.event.issue.number }} "$ISSUE_BODY")
           
           # Create a formatted comment with the response
           COMMENT="
