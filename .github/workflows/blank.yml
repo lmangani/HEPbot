@@ -168,12 +168,10 @@ jobs:
           ISSUE_BODY: ${{ github.event.comment.body || github.event.issue.body }}
         run: |
           # Generate response using HugChat, maintaining context per issue
-          ls -alFh hugchat_cli.py
-          RESPONSE=$(python hugchat_cli.py --web-search --issue-number ${{ github.event.issue.number }} "$ISSUE_BODY")
+          RESPONSE=$(python3 hugchat_cli.py --web-search --issue-number ${{ github.event.issue.number }} "$ISSUE_BODY")
           
           # Create a formatted comment with the response
           COMMENT="
-
           $RESPONSE
 
           > 👋 Hello! I am a model powered by QXIP and Huggingface. Please carefully verify any information provided!"
