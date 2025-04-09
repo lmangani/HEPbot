@@ -1,0 +1,196 @@
+name: HugChat Issue Response
+on:
+  issues:
+    types: [opened, edited]
+  issue_comment:
+    types: [created, edited]
+
+jobs:
+  respond-to-issue:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install hugchat
+
+      - name: Create HugChat CLI script
+        run: |
+          mkdir -p cookies
+          cat > hugchat_cli.py << 'EOL'
+#!/usr/bin/env python3
+
+import argparse
+import os
+import sys
+import json
+from hugchat import hugchat
+from hugchat.login import Login
+
+def setup_argparse():
+    parser = argparse.ArgumentParser(description='Interact with HugChat from command line')
+    parser.add_argument('prompt', help='The prompt to send to HugChat')
+    parser.add_argument('--email', help='HuggingFace email', 
+                      default=os.environ.get('HUGCHAT_EMAIL'))
+    parser.add_argument('--password', help='HuggingFace password',
+                      default=os.environ.get('HUGCHAT_PASSWORD'))
+    parser.add_argument('--cookie-dir', help='Cookie directory path',
+                      default='./cookies/')
+    parser.add_argument('--assistant-id', help='Assistant ID',
+                      default=os.environ.get('HUGCHAT_ASSISTANT_ID'))
+    parser.add_argument('--web-search', action='store_true',
+                      help='Enable web search')
+    parser.add_argument('--conversation-id', help='Continue an existing conversation using its ID')
+    parser.add_argument('--save-conversation', help='Save the conversation ID to a file for later use')
+    parser.add_argument('--conversation-mapping-file', help='File to store issue-conversation mappings',
+                      default='./conversation_mappings.json')
+    parser.add_argument('--issue-number', help='GitHub issue number to associate with this conversation')
+    return parser
+
+def login_to_hugchat(email, password, cookie_dir):
+    if not email or not password:
+        print("Error: Email and password are required. Set them via arguments or environment variables "
+              "HUGCHAT_EMAIL and HUGCHAT_PASSWORD")
+        sys.exit(1)
+
+    try:
+        os.makedirs(cookie_dir, exist_ok=True)
+        sign = Login(email, password)
+        cookies = sign.login(cookie_dir_path=cookie_dir, save_cookies=True)
+        return cookies.get_dict()
+    except Exception as e:
+        print(f"Error logging in: {str(e)}")
+        sys.exit(1)
+
+def load_conversation_mapping(file_path):
+    """Load the mapping of issue numbers to conversation IDs"""
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, 'r') as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+def save_conversation_mapping(file_path, mapping):
+    """Save the mapping of issue numbers to conversation IDs"""
+    try:
+        with open(file_path, 'w') as f:
+            json.dump(mapping, f)
+    except Exception as e:
+        print(f"Error saving conversation mapping: {str(e)}")
+
+def main():
+    parser = setup_argparse()
+    args = parser.parse_args()
+
+    cookies = login_to_hugchat(args.email, args.password, args.cookie_dir)
+    conversation_id = args.conversation_id
+    
+    # If an issue number is provided, try to look up an existing conversation
+    if args.issue_number and not conversation_id:
+        mapping = load_conversation_mapping(args.conversation_mapping_file)
+        conversation_id = mapping.get(str(args.issue_number))
+        
+    try:
+        chatbot = hugchat.ChatBot(cookies=cookies)
+        
+        # Check if we have a valid conversation ID to continue
+        if conversation_id:
+            # List all conversations to verify the ID exists
+            conversations = chatbot.get_conversation_list()
+            conv_ids = [conv['id'] for conv in conversations]
+            
+            if conversation_id in conv_ids:
+                chatbot.change_conversation(conversation_id)
+                print(f"Continuing conversation: {conversation_id}", file=sys.stderr)
+            else:
+                print(f"Conversation ID {conversation_id} not found, creating new conversation", file=sys.stderr)
+                conversation_id = None
+        
+        # If no valid conversation ID, create a new one
+        if not conversation_id:
+            new_conv = chatbot.new_conversation(assistant=args.assistant_id, switch_to=True)
+            conversation_id = new_conv['id']
+            print(f"Created new conversation: {conversation_id}", file=sys.stderr)
+            
+            # If issue number is provided, save this mapping for future use
+            if args.issue_number:
+                mapping = load_conversation_mapping(args.conversation_mapping_file)
+                mapping[str(args.issue_number)] = conversation_id
+                save_conversation_mapping(args.conversation_mapping_file, mapping)
+        
+        # Send the prompt and get the response
+        message_result = chatbot.chat(args.prompt, web_search=args.web_search)
+        response = message_result.wait_until_done()
+        
+        # Print only the response to stdout (for capture by the GitHub Action)
+        print(response)
+        
+        # If requested, save the conversation ID
+        if args.save_conversation:
+            with open(args.save_conversation, 'w') as f:
+                f.write(conversation_id)
+
+    except Exception as e:
+        print(f"Error during chat: {str(e)}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
+EOL
+          chmod +x hugchat_cli.py
+
+      # This step ensures we have the mapping file even if it doesn't exist yet
+      - name: Make sure conversation mapping file exists
+        run: |
+          if [ ! -f "./conversation_mappings.json" ]; then
+            echo "{}" > conversation_mappings.json
+          fi
+          
+      # Pull conversation mappings if they exist in previous runs
+      - name: Checkout conversation mappings
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            conversation_mappings.json
+          sparse-checkout-cone-mode: false
+        continue-on-error: true
+
+      - name: Get issue content and generate response
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HUGCHAT_EMAIL: ${{ secrets.HUGCHAT_EMAIL }}
+          HUGCHAT_PASSWORD: ${{ secrets.HUGCHAT_PASSWORD }}
+          ISSUE_BODY: ${{ github.event.comment.body || github.event.issue.body }}
+        run: |
+          # Generate response using HugChat, maintaining context per issue
+          RESPONSE=$(python hugchat_cli.py --web-search --issue-number ${{ github.event.issue.number }} "$ISSUE_BODY")
+          
+          # Create a formatted comment with the response
+          COMMENT="👋 Hello! 
+
+          $RESPONSE
+
+          > I am a bot powered by Huggingface. Please verify any information provided."
+          
+          # Post the comment to the issue
+          gh issue comment ${{ github.event.issue.number }} --body "$COMMENT"
+          
+      # Save the updated conversation mappings
+      - name: Save conversation mappings
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Update conversation mappings"
+          file_pattern: "conversation_mappings.json"
