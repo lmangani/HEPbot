@@ -40,10 +40,10 @@ jobs:
           def setup_argparse():
               parser = argparse.ArgumentParser(description='Interact with HugChat from command line')
               parser.add_argument('prompt', help='The prompt to send to HugChat')
-              parser.add_argument('--email', help='HuggingFace email', 
+              parser.add_argument('--token', help='HuggingFace access token', 
+                                default=os.environ.get('HUGCHAT_TOKEN'))
+              parser.add_argument('--email', help='HuggingFace email (fallback)', 
                                 default=os.environ.get('HUGCHAT_EMAIL'))
-              parser.add_argument('--password', help='HuggingFace password',
-                                default=os.environ.get('HUGCHAT_PASSWORD'))
               parser.add_argument('--cookie-dir', help='Cookie directory path',
                                 default='./cookies/')
               parser.add_argument('--assistant-id', help='Assistant ID',
@@ -55,26 +55,30 @@ jobs:
                                 default='opened')
               return parser
           
-          def login_to_hugchat(email, password, cookie_dir):
-              if not email or not password:
-                  print("Error: Email and password are required. Set them via arguments or environment variables "
-                        "HUGCHAT_EMAIL and HUGCHAT_PASSWORD")
+          def login_with_token(token, email, cookie_dir):
+              if not token:
+                  print("Error: HuggingFace access token is required. Set it via --token or HUGCHAT_TOKEN environment variable")
+                  sys.exit(1)
+              
+              if not email:
+                  print("Error: Email is still required for token auth. Set it via --email or HUGCHAT_EMAIL environment variable")
                   sys.exit(1)
           
               try:
                   os.makedirs(cookie_dir, exist_ok=True)
-                  sign = Login(email, password)
-                  cookies = sign.login(cookie_dir_path=cookie_dir, save_cookies=True)
+                  # Use token-based authentication
+                  sign = Login(email, None, use_access_token=True)
+                  cookies = sign.login(access_token=token, cookie_dir_path=cookie_dir, save_cookies=True)
                   return cookies.get_dict()
               except Exception as e:
-                  print(f"Error logging in: {str(e)}")
+                  print(f"Error logging in with token: {str(e)}")
                   sys.exit(1)
           
           def main():
               parser = setup_argparse()
               args = parser.parse_args()
           
-              cookies = login_to_hugchat(args.email, args.password, args.cookie_dir)
+              cookies = login_with_token(args.token, args.email, args.cookie_dir)
               
               try:
                   chatbot = hugchat.ChatBot(cookies=cookies)
@@ -125,7 +129,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HUGCHAT_EMAIL: ${{ secrets.HUGCHAT_EMAIL }}
-          HUGCHAT_PASSWORD: ${{ secrets.HUGCHAT_PASSWORD }}
+          HUGCHAT_TOKEN: ${{ secrets.HUGCHAT_PASSWORD }}  # Using your existing password secret as token
           ISSUE_BODY: ${{ github.event.comment.body || github.event.issue.body }}
           EVENT_TYPE: ${{ github.event_name == 'issues' && github.event.action || 'created' }}
         run: |
@@ -133,9 +137,7 @@ jobs:
           RESPONSE=$(python hugchat_cli.py --web-search --issue-number ${{ github.event.issue.number }} --event-type $EVENT_TYPE "$ISSUE_BODY")
           
           # Create a formatted comment with the response
-          COMMENT="👋 Hello! 
-
-          $RESPONSE
+          COMMENT="$RESPONSE
 
           > I am a bot powered by Huggingface. Please verify any information provided."
           
