@@ -160,15 +160,6 @@ jobs:
             echo "{}" > conversation_mappings.json
           fi
           
-      # Pull conversation mappings if they exist in previous runs
-      - name: Checkout conversation mappings
-        uses: actions/checkout@v4
-        with:
-          sparse-checkout: |
-            conversation_mappings.json
-          sparse-checkout-cone-mode: false
-        continue-on-error: true
-
       - name: Get issue content and generate response
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
